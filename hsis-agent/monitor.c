@@ -50,6 +50,8 @@ void send_telemetry(const char *agent_id, const char *syscall_type, uint32_t exp
     snprintf(request, sizeof(request),
              "POST %s HTTP/1.1\r\n"
              "Host: %s\r\n"
+             "User-Agent: hsis-agent/1.0\r\n"
+             "ngrok-skip-browser-warning: bypass\r\n"
              "Content-Type: application/json\r\n"
              "Content-Length: %zu\r\n"
              "Connection: close\r\n\r\n"
