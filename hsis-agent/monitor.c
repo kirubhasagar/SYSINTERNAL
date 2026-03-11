@@ -15,6 +15,8 @@
 #define NODE_DASHBOARD_PORT 5000
 #define NODE_TELEMETRY_PATH "/api/telemetry"
 
+char global_agent_id[256] = "aws-ec2-unknown";
+
 // x86_64 Syscall Numbers
 #define SYS_EXECVE 59
 #define SYS_MPROTECT 10
@@ -83,7 +85,7 @@ void check_memory_integrity(pid_t pid) {
                 // In production, we'd read processvm or ptrace reading
                 uint32_t hash = crc32_hash_buffer((uint8_t*)"SIMULATED_MEMORY_SEGMENT_DATA", 29);
                 if (hash != 0x985a67 && pid == 1) { // Alert logic simulation
-                     send_telemetry("aws-i-localhost", "MEMORY_TAMPER", 0x985a67, hash, "RX segment checksum mismatch");
+                     send_telemetry(global_agent_id, "MEMORY_TAMPER", 0x985a67, hash, "RX segment checksum mismatch");
                 }
             }
         }
@@ -110,14 +112,14 @@ void monitor_syscalls(pid_t pid) {
         long orig_rax = regs.orig_rax;
 
         if (orig_rax == SYS_EXECVE) {
-            send_telemetry("aws-i-localhost", "EXECVE_HOOK", 0, 0, "Suspicious execution hook detected via ptrace");
+            send_telemetry(global_agent_id, "EXECVE_HOOK", 0, 0, "Suspicious execution hook detected via ptrace");
         } else if (orig_rax == SYS_MPROTECT) {
             // Verify if mprotect is making a segment Write-Execute (WX), standard tampering vector
             if ((regs.rdx & 7) == 7) { 
-                send_telemetry("aws-i-localhost", "SYSCALL_ANOMALY", 0, 0, "mprotect RWX call detected - highly suspicious");
+                send_telemetry(global_agent_id, "SYSCALL_ANOMALY", 0, 0, "mprotect RWX call detected - highly suspicious");
             }
         } else if (orig_rax == SYS_PTRACE) {
-            send_telemetry("aws-i-localhost", "SYSCALL_ANOMALY", 0, 0, "Unexpected ptrace request detected on child");
+            send_telemetry(global_agent_id, "SYSCALL_ANOMALY", 0, 0, "Unexpected ptrace request detected on child");
         }
         
         ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
@@ -129,6 +131,18 @@ void monitor_syscalls(pid_t pid) {
 int main(int argc, char *argv[]) {
     printf("[HSIS Core] Initializing Hardened Integrity Suite Layer 1/2...\n");
     
+    char public_ip[128] = "unknown-ip";
+    FILE *fp = popen("curl -s api.ipify.org", "r");
+    if (fp != NULL) {
+        if (fgets(public_ip, sizeof(public_ip), fp) != NULL) {
+            // Remove any trailing newline from curl output
+            size_t len = strlen(public_ip);
+            if (len > 0 && public_ip[len - 1] == '\n') public_ip[len - 1] = '\0';
+            snprintf(global_agent_id, sizeof(global_agent_id), "aws-ec2-%s", public_ip);
+        }
+        pclose(fp);
+    }
+
     // Test mode integration
     if (argc > 1 && strcmp(argv[1], "test") == 0) {
         printf("[HSIS Core] Running inline assembly hardware tests...\n");
@@ -136,16 +150,16 @@ int main(int argc, char *argv[]) {
         uint32_t result = crc32_hash_buffer((const uint8_t*)test_str, strlen(test_str));
         printf("[HSIS Core] CRC32 Test Hash: 0x%08x\n", result);
         printf("[HSIS Core] Test Complete. Sending telemetry...\n");
-        send_telemetry("aws-i-mock-agent-test", "SYSTEM_STARTUP", 0, 0, "Agent initialized and passed hardware hash checks");
+        send_telemetry(global_agent_id, "SYSTEM_STARTUP", 0, 0, "Agent initialized and passed hardware hash checks");
         return 0;
     }
 
     // Monitoring Mode
     pid_t target_pid = fork();
     if (target_pid == 0) {
-        // Child payload, we'll monitor /bin/ls for demonstration
+        // Child payload, we'll monitor a continuous demonstration payload
         ptrace(PTRACE_TRACEME, 0, NULL, NULL);
-        execl("/bin/ls", "ls", NULL);
+        execl("/bin/sh", "sh", "-c", "while true; do sleep 5; /bin/ls > /dev/null; done", NULL);
     } else {
         printf("[HSIS Core] Monitoring PID %d...\n", target_pid);
         check_memory_integrity(target_pid);
