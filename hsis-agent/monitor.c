@@ -12,7 +12,7 @@
 #include <time.h>
 
 #define NODE_DASHBOARD_HOST "32ca-49-47-219-228.ngrok-free.app"
-#define NODE_DASHBOARD_PORT 5000
+#define NODE_DASHBOARD_PORT 80
 #define NODE_TELEMETRY_PATH "/api/telemetry"
 
 char global_agent_id[256] = "aws-ec2-unknown";
