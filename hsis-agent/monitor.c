@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <time.h>
 
 #define NODE_DASHBOARD_HOST "32ca-49-47-219-228.ngrok-free.app"
@@ -45,26 +46,37 @@ void send_telemetry(const char *agent_id, const char *syscall_type, uint32_t exp
              "{\"agent_id\":\"%s\",\"syscall_type\":\"%s\",\"expected_hash\":%s,\"actual_hash\":%s,\"details\":\"%s\"}",
              agent_id, syscall_type, ex_hash_str, ac_hash_str, details);
 
-    // Build HTTP POST Request
+    // Build HTTP POST Request (without port in Host header for standard Ngrok routing)
     snprintf(request, sizeof(request),
              "POST %s HTTP/1.1\r\n"
-             "Host: %s:%d\r\n"
+             "Host: %s\r\n"
              "Content-Type: application/json\r\n"
              "Content-Length: %zu\r\n"
              "Connection: close\r\n\r\n"
              "%s",
-             NODE_TELEMETRY_PATH, dashboard_host, dashboard_port, strlen(payload), payload);
+             NODE_TELEMETRY_PATH, dashboard_host, strlen(payload), payload);
 
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) return; // Fail silently down low to prevent crash
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", dashboard_port);
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(dashboard_port);
-    inet_pton(AF_INET, dashboard_host, &server_addr.sin_addr);
+    if (getaddrinfo(dashboard_host, port_str, &hints, &res) != 0) return;
 
-    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) >= 0) {
+    if ((sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) < 0) {
+        freeaddrinfo(res);
+        return;
+    }
+
+    if (connect(sock, res->ai_addr, res->ai_addrlen) >= 0) {
         send(sock, request, strlen(request), 0);
     }
+    
     close(sock);
+    freeaddrinfo(res);
 }
 
 // Layer 2 Hash Scanning
