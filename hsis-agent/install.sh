@@ -38,6 +38,9 @@ Type=simple
 ExecStart=/usr/local/bin/hsis_agent
 Restart=on-failure
 RestartSec=5
+# Uncomment and update the IP below for Cloud VM Telemetry routing
+#Environment="HSIS_DASHBOARD_HOST=your-remote-dashboard-ip"
+#Environment="HSIS_DASHBOARD_PORT=5000"
 
 [Install]
 WantedBy=multi-user.target

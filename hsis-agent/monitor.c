@@ -32,6 +32,9 @@ void send_telemetry(const char *agent_id, const char *syscall_type, uint32_t exp
     char ex_hash_str[32] = "null";
     char ac_hash_str[32] = "null";
 
+    const char *dashboard_host = getenv("HSIS_DASHBOARD_HOST") ? getenv("HSIS_DASHBOARD_HOST") : NODE_DASHBOARD_HOST;
+    int dashboard_port = getenv("HSIS_DASHBOARD_PORT") ? atoi(getenv("HSIS_DASHBOARD_PORT")) : NODE_DASHBOARD_PORT;
+
     if (expected != 0) snprintf(ex_hash_str, sizeof(ex_hash_str), "\"%08x\"", expected);
     if (actual != 0) snprintf(ac_hash_str, sizeof(ac_hash_str), "\"%08x\"", actual);
 
@@ -48,13 +51,13 @@ void send_telemetry(const char *agent_id, const char *syscall_type, uint32_t exp
              "Content-Length: %zu\r\n"
              "Connection: close\r\n\r\n"
              "%s",
-             NODE_TELEMETRY_PATH, NODE_DASHBOARD_HOST, NODE_DASHBOARD_PORT, strlen(payload), payload);
+             NODE_TELEMETRY_PATH, dashboard_host, dashboard_port, strlen(payload), payload);
 
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) return; // Fail silently down low to prevent crash
 
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(NODE_DASHBOARD_PORT);
-    inet_pton(AF_INET, NODE_DASHBOARD_HOST, &server_addr.sin_addr);
+    server_addr.sin_port = htons(dashboard_port);
+    inet_pton(AF_INET, dashboard_host, &server_addr.sin_addr);
 
     if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) >= 0) {
         send(sock, request, strlen(request), 0);

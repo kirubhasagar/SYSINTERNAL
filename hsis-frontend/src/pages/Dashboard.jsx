@@ -3,34 +3,91 @@ import { ShieldAlert, ShieldCheck, Shield, Activity, Server, Database, LineChart
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 
-const mockTelemetryData = [
-  { time: '10:00', syscalls: 120, violations: 0 },
-  { time: '10:05', syscalls: 132, violations: 0 },
-  { time: '10:10', syscalls: 101, violations: 0 },
-  { time: '10:15', syscalls: 145, violations: 2 },
-  { time: '10:20', syscalls: 890, violations: 15 },
-  { time: '10:25', syscalls: 150, violations: 0 },
-];
-
-const mockAgents = [
-  { id: 'aws-i-0abc123', status: 'secure', ip: '10.0.1.45', lastPing: '2s ago', alerts: 0 },
-  { id: 'aws-i-0def456', status: 'warning', ip: '10.0.2.112', lastPing: '5s ago', alerts: 3 },
-  { id: 'aws-i-0ghi789', status: 'compromised', ip: '10.0.3.18', lastPing: '1s ago', alerts: 12 },
-];
-
-const mockLogs = [
-  { id: 1, time: '10:20:45', agent: 'aws-i-0ghi789', type: 'SYSCALL_ANOMALY', details: 'Unexpected ptrace request detected on PID 1245' },
-  { id: 2, time: '10:20:42', agent: 'aws-i-0ghi789', type: 'MEMORY_TAMPER', details: 'RX segment checksum mismatch in libc.so.6' },
-  { id: 3, time: '10:15:12', agent: 'aws-i-0def456', type: 'EXECVE_HOOK', details: 'Suspicious execution of /bin/bash from httpd' },
-];
-
 const Dashboard = () => {
   const navigate = useNavigate();
   const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString());
+  const [logs, setLogs] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [telemetryData, setTelemetryData] = useState([]);
+  const [stats, setStats] = useState({ activeAgents: 0, systemState: 'SECURE', telemetryRate: '0/s', logsProcessed: 0 });
 
   useEffect(() => {
+    const fetchTelemetry = async () => {
+      try {
+        const res = await fetch('http://localhost:5000/api/telemetry');
+        const data = await res.json();
+        
+        if (data && data.length > 0) {
+          const formattedLogs = data.map((log, index) => ({
+            id: log._id || index,
+            time: new Date(log.timestamp).toLocaleTimeString(),
+            agent: log.agent_id,
+            type: log.syscall_type,
+            details: log.details || 'Suspicious activity detected'
+          }));
+          setLogs(formattedLogs);
+
+          const uniqueAgentsMap = {};
+          data.forEach(log => {
+            if (!uniqueAgentsMap[log.agent_id]) {
+              const ip = log.agent_id.replace('aws-ec2-', '');
+              uniqueAgentsMap[log.agent_id] = { id: log.agent_id, status: 'secure', ip: ip, lastPing: new Date(log.timestamp).toLocaleTimeString(), alerts: 0 };
+            }
+            if (log.syscall_type !== 'SYSTEM_STARTUP') {
+              uniqueAgentsMap[log.agent_id].alerts += 1;
+            }
+            if (log.syscall_type === 'MEMORY_TAMPER' || log.syscall_type === 'EXECVE_HOOK') {
+               uniqueAgentsMap[log.agent_id].status = 'compromised';
+            } else if (log.syscall_type === 'SYSCALL_ANOMALY' && uniqueAgentsMap[log.agent_id].status !== 'compromised') {
+               uniqueAgentsMap[log.agent_id].status = 'warning';
+            }
+          });
+          
+          const agentList = Object.values(uniqueAgentsMap);
+          setAgents(agentList);
+
+          let state = 'SECURE';
+          if (agentList.some(a => a.status === 'compromised')) state = 'CRITICAL';
+          else if (agentList.some(a => a.status === 'warning')) state = 'WARNING';
+
+          setStats({
+            activeAgents: agentList.length,
+            systemState: state,
+            telemetryRate: `${Math.max(1, Math.round(data.length / 2.5))}/s`,
+            logsProcessed: data.length
+          });
+          
+          const tData = [];
+          let currentBin = { time: formattedLogs[0]?.time || new Date().toLocaleTimeString(), syscalls: 0, violations: 0 };
+          const chronoLogs = [...formattedLogs].reverse();
+           
+          chronoLogs.forEach((l, i) => {
+             currentBin.syscalls += 1;
+             if (l.type !== 'SYSTEM_STARTUP') currentBin.violations += 1;
+             
+             if (currentBin.syscalls >= Math.max(1, Math.floor(chronoLogs.length / 10))) {
+               tData.push({...currentBin});
+               if (i < chronoLogs.length - 1) currentBin = { time: chronoLogs[i+1].time, syscalls: 0, violations: 0 };
+             }
+          });
+          if (currentBin.syscalls > 0 && tData.indexOf(currentBin) === -1) tData.push({...currentBin});
+          
+          if (tData.length === 0) tData.push({ time: new Date().toLocaleTimeString(), syscalls: 0, violations: 0 });
+          setTelemetryData(tData.slice(-10));
+        }
+      } catch (err) {
+        console.error("Failed to fetch telemetry", err);
+      }
+    };
+
+    fetchTelemetry();
+    const intervalId = setInterval(fetchTelemetry, 2500);
     const timer = setInterval(() => setCurrentTime(new Date().toLocaleTimeString()), 1000);
-    return () => clearInterval(timer);
+    
+    return () => {
+      clearInterval(intervalId);
+      clearInterval(timer);
+    };
   }, []);
 
   const handleLogout = () => {
@@ -87,7 +144,7 @@ const Dashboard = () => {
           <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-xl flex items-center justify-between">
             <div>
               <p className="text-slate-400 text-sm font-medium">Active Agents</p>
-              <h3 className="text-2xl font-bold text-white mt-1">3</h3>
+              <h3 className="text-2xl font-bold text-white mt-1">{stats.activeAgents}</h3>
             </div>
             <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center">
               <Server className="w-6 h-6 text-blue-400" />
@@ -97,17 +154,19 @@ const Dashboard = () => {
           <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-xl flex items-center justify-between">
             <div>
               <p className="text-slate-400 text-sm font-medium">System State</p>
-              <h3 className="text-2xl font-bold text-red-500 mt-1">CRITICAL</h3>
+              <h3 className={`text-2xl font-bold mt-1 ${stats.systemState === 'CRITICAL' ? 'text-red-500' : stats.systemState === 'WARNING' ? 'text-amber-500' : 'text-emerald-500'}`}>
+                {stats.systemState}
+              </h3>
             </div>
-            <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center">
-              <ShieldAlert className="w-6 h-6 text-red-500" />
+            <div className={`w-12 h-12 rounded-full flex items-center justify-center ${stats.systemState === 'CRITICAL' ? 'bg-red-500/10' : stats.systemState === 'WARNING' ? 'bg-amber-500/10' : 'bg-emerald-500/10'}`}>
+              {stats.systemState === 'CRITICAL' ? <ShieldAlert className="w-6 h-6 text-red-500" /> : <ShieldCheck className="w-6 h-6 text-emerald-500" />}
             </div>
           </div>
 
           <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-xl flex items-center justify-between">
             <div>
               <p className="text-slate-400 text-sm font-medium">Telemetry Rate</p>
-              <h3 className="text-2xl font-bold text-white mt-1">1.2k/s</h3>
+              <h3 className="text-2xl font-bold text-white mt-1">{stats.telemetryRate}</h3>
             </div>
             <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center">
               <Activity className="w-6 h-6 text-emerald-400" />
@@ -117,7 +176,7 @@ const Dashboard = () => {
           <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-xl flex items-center justify-between">
             <div>
               <p className="text-slate-400 text-sm font-medium">Logs Processed</p>
-              <h3 className="text-2xl font-bold text-white mt-1">842.1M</h3>
+              <h3 className="text-2xl font-bold text-white mt-1">{stats.logsProcessed}</h3>
             </div>
             <div className="w-12 h-12 rounded-full bg-indigo-500/10 flex items-center justify-center">
               <Database className="w-6 h-6 text-indigo-400" />
@@ -138,7 +197,7 @@ const Dashboard = () => {
             </div>
             <div className="p-6 flex-1 h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={mockTelemetryData}>
+                <LineChart data={telemetryData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                   <XAxis dataKey="time" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
                   <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
@@ -163,7 +222,7 @@ const Dashboard = () => {
             </div>
             <div className="p-4 flex-1">
               <div className="space-y-3">
-                {mockAgents.map(agent => (
+                {agents.length === 0 ? <p className="text-slate-500 text-sm">No active agents</p> : agents.map(agent => (
                   <div key={agent.id} className="p-3 rounded-lg border border-slate-800 bg-slate-950/50 flex items-center justify-between group hover:border-slate-700 transition-colors cursor-pointer">
                     <div className="flex items-center gap-3">
                       <div className="relative">
@@ -204,8 +263,8 @@ const Dashboard = () => {
             </div>
           </div>
           <div className="p-4 h-64 overflow-y-auto text-sm">
-            {mockLogs.map((log, i) => (
-               <div key={i} className={`mb-2 pb-2 border-b border-slate-800/50 ${log.type === 'MEMORY_TAMPER' ? 'text-red-400' : 'text-amber-400'}`}>
+            {logs.length === 0 ? <div className="text-slate-500">No telemetry logs found.</div> : logs.map((log, i) => (
+               <div key={i} className={`mb-2 pb-2 border-b border-slate-800/50 ${log.type === 'MEMORY_TAMPER' ? 'text-red-400' : log.type === 'SYSTEM_STARTUP' ? 'text-emerald-400' : 'text-amber-400'}`}>
                  <span className="text-slate-500 mr-2">[{log.time}]</span>
                  <span className="text-blue-400 mr-2">[{log.agent}]</span>
                  <span className="font-bold mr-2">[{log.type}]</span>

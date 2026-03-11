@@ -41,13 +41,11 @@ router.get('/', async (req, res) => {
   try {
     let logs = [];
     try {
-      logs = await TelemetryLog.find().sort({ timestamp: -1 }).limit(50);
+      logs = await TelemetryLog.find({ agent_id: { $regex: /^aws-ec2-/ } }).sort({ timestamp: -1 }).limit(50);
     } catch (dbError) {
-      console.log('DB offline, returning mock data for dashboard view.');
-      // Return some mock data if DB is offline so frontend doesn't break
-      logs = [
-        { _id: '1', timestamp: new Date(), agent_id: 'aws-i-mock', syscall_type: 'SYSCALL_ANOMALY', details: 'Mock data (DB Offline)' }
-      ];
+      console.log('DB offline, returning empty data for dashboard view.');
+      // Return empty array if DB is offline so frontend doesn't show static data
+      logs = [];
     }
     
     res.json(logs);
