@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <time.h>
+#include <sys/mman.h>
 
 #define NODE_DASHBOARD_HOST "32ca-49-47-219-228.ngrok-free.app"
 #define NODE_DASHBOARD_PORT 80
@@ -174,9 +175,14 @@ int main(int argc, char *argv[]) {
     // Monitoring Mode
     pid_t target_pid = fork();
     if (target_pid == 0) {
-        // Child payload, we'll monitor a continuous demonstration payload
+        // Child payload generating highly suspicious metrics directly
         ptrace(PTRACE_TRACEME, 0, NULL, NULL);
-        execl("/bin/sh", "sh", "-c", "while true; do sleep 5; /bin/ls > /dev/null; done", NULL);
+        while (1) {
+            // Trigger an RWX mprotect 
+            void *ptr = mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+            mprotect(ptr, 4096, PROT_READ|PROT_WRITE|PROT_EXEC);
+            sleep(2);
+        }
     } else {
         printf("[HSIS Core] Monitoring PID %d...\n", target_pid);
         check_memory_integrity(target_pid);
