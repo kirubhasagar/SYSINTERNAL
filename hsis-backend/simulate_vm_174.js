@@ -1,27 +1,25 @@
 const http = require('http');
 
-const agentIp = '54.175.174.244';
-console.log(`=== Pushing Telemetry for Cloud VM: ${agentIp} ===`);
-
-const syscall_types = ['SYS_EXECVE', 'SYS_MPROTECT', 'SYS_PTRACE', 'MEMORY_TAMPER', 'SYSCALL_ANOMALY'];
+console.log("=== Pushing Telemetry for 54.175.174.244 ===");
 
 const sendPacket = () => {
-    const type = syscall_types[Math.floor(Math.random() * syscall_types.length)];
-    
-    let details = "Monitoring standard deviation.";
-    if (type === 'MEMORY_TAMPER') details = "RX segment checksum mismatch detected!";
-    if (type === 'SYSCALL_ANOMALY') details = "ptrace RWX hook anomaly";
-
     const data = JSON.stringify({
-        agent_id: `aws-ec2-${agentIp}`,
-        syscall_type: type,
+        agent_id: `aws-ec2-54.175.174.244`,
+        syscall_type: 'SYSTEM_STARTUP',
         expected_hash: "0x985a67",
-        actual_hash: type === 'MEMORY_TAMPER' ? "0xbadbad" : "0x985a67",
-        details: details
+        actual_hash: "0x985a67",
+        details: JSON.stringify({
+            msg: "Agent initialized and connected successfully.",
+            process: "hsis_agent",
+            severity: "Low",
+            pid: 1024,
+            cpu: "0.1%",
+            mem: "0.5%"
+        })
     });
 
     const options = {
-        hostname: '127.0.0.1', // Dashboard IP (local for testing, change to public if running remotely)
+        hostname: '127.0.0.1',
         port: 5000,
         path: '/api/telemetry',
         method: 'POST',
@@ -32,11 +30,32 @@ const sendPacket = () => {
     };
 
     const req = http.request(options, (res) => {});
-    req.on('error', (e) => {
-        // console.log("Error:", e.message);
-    });
+    req.on('error', (e) => {});
     req.write(data);
     req.end();
+
+    // Send a periodic execve to keep the chart moving
+    setTimeout(() => {
+        const pingData = JSON.stringify({
+            agent_id: `aws-ec2-54.175.174.244`,
+            syscall_type: 'execve',
+            expected_hash: "0x0",
+            actual_hash: "0x0",
+            details: JSON.stringify({
+                msg: "Monitoring standard deviation.",
+                process: "/usr/sbin/sshd",
+                severity: "Low",
+                pid: 2048,
+                cpu: "1.0%",
+                mem: "2.0%"
+            })
+        });
+        const req2 = http.request(options, (res) => {});
+        req2.on('error', (e) => {});
+        req2.write(pingData);
+        req2.end();
+    }, 1000);
 };
 
-setInterval(sendPacket, 800);
+sendPacket();
+setInterval(sendPacket, 3000);

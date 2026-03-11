@@ -156,6 +156,9 @@ int main(int argc, char *argv[]) {
         }
         pclose(fp);
     }
+    
+    // Always ping dashboard on startup
+    send_telemetry(global_agent_id, "SYSTEM_STARTUP", 0, 0, "Agent initialized and connected successfully.");
 
     // Test mode integration
     if (argc > 1 && strcmp(argv[1], "test") == 0) {
