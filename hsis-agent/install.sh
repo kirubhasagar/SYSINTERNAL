@@ -8,18 +8,9 @@ echo "====================================================="
 
 # Ensure running as root
 if [ "$EUID" -ne 0 ]; then
-  echo "[!] Please run as root (sudo ./install.sh <DASHBOARD_IP>)"
+  echo "[!] Please run as root (sudo ./install.sh)"
   exit 1
 fi
-
-DASHBOARD_IP=$1
-if [ -z "$DASHBOARD_IP" ]; then
-  echo "[!] Error: Missing Dashboard IP argument."
-  echo "Usage: sudo ./install.sh <DASHBOARD_IP>"
-  exit 1
-fi
-
-echo "[+] Target Dashboard configured to: $DASHBOARD_IP"
 
 echo "[+] Installing toolchain requirements..."
 yum update -y >/dev/null 2>&1 || apt-get update -y >/dev/null 2>&1
@@ -47,9 +38,9 @@ Type=simple
 ExecStart=/usr/local/bin/hsis_agent
 Restart=on-failure
 RestartSec=5
-# Automatically injected by install.sh
-Environment="HSIS_DASHBOARD_HOST=$DASHBOARD_IP"
-Environment="HSIS_DASHBOARD_PORT=5000"
+# Hardcoded in monitor.c
+#Environment="HSIS_DASHBOARD_HOST=your-remote-dashboard-ip"
+#Environment="HSIS_DASHBOARD_PORT=5000"
 
 [Install]
 WantedBy=multi-user.target

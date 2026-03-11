@@ -14,7 +14,7 @@ const Dashboard = () => {
   useEffect(() => {
     const fetchTelemetry = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/telemetry');
+        const res = await fetch('/api/telemetry');
         const data = await res.json();
         
         if (data && data.length > 0) {

@@ -11,7 +11,7 @@
 #include <arpa/inet.h>
 #include <time.h>
 
-#define NODE_DASHBOARD_HOST "127.0.0.1"
+#define NODE_DASHBOARD_HOST "32ca-49-47-219-228.ngrok-free.app"
 #define NODE_DASHBOARD_PORT 5000
 #define NODE_TELEMETRY_PATH "/api/telemetry"
 
