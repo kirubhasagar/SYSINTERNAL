@@ -3,7 +3,7 @@ const http = require('http');
 console.log("=== HSIS Layer 1/2 Telemetry Simulator ===");
 console.log("Injecting sys_call and memory_tamper blocks to local dashboard...");
 
-const agents = ['aws-i-0abc123', 'aws-i-0def456', 'aws-i-0ghi789'];
+const agents = ['aws-ec2-0abc123', 'aws-ec2-0def456', 'aws-ec2-0ghi789'];
 const syscall_types = ['SYS_EXECVE', 'SYS_MPROTECT', 'SYS_PTRACE', 'MEMORY_TAMPER', 'SYSCALL_ANOMALY'];
 
 const sendPacket = () => {
