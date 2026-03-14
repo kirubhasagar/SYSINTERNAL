@@ -29,15 +29,9 @@ extern uint32_t crc32_hash_buffer(const uint8_t *buffer, size_t length);
 
 // Telemetry Logic
 void send_telemetry(const char *agent_id, const char *syscall_type, uint32_t expected, uint32_t actual, const char *details) {
-    int sock;
-    struct sockaddr_in server_addr;
     char payload[1024];
-    char request[2048];
     char ex_hash_str[32] = "null";
     char ac_hash_str[32] = "null";
-
-    const char *dashboard_host = getenv("HSIS_DASHBOARD_HOST") ? getenv("HSIS_DASHBOARD_HOST") : NODE_DASHBOARD_HOST;
-    int dashboard_port = getenv("HSIS_DASHBOARD_PORT") ? atoi(getenv("HSIS_DASHBOARD_PORT")) : NODE_DASHBOARD_PORT;
 
     if (expected != 0) snprintf(ex_hash_str, sizeof(ex_hash_str), "\"%08x\"", expected);
     if (actual != 0) snprintf(ac_hash_str, sizeof(ac_hash_str), "\"%08x\"", actual);
@@ -47,39 +41,16 @@ void send_telemetry(const char *agent_id, const char *syscall_type, uint32_t exp
              "{\"agent_id\":\"%s\",\"syscall_type\":\"%s\",\"expected_hash\":%s,\"actual_hash\":%s,\"details\":\"%s\"}",
              agent_id, syscall_type, ex_hash_str, ac_hash_str, details);
 
-    // Build HTTP POST Request (without port in Host header for standard Ngrok routing)
-    snprintf(request, sizeof(request),
-             "POST %s HTTP/1.1\r\n"
-             "Host: %s\r\n"
-             "User-Agent: hsis-agent/1.0\r\n"
-             "ngrok-skip-browser-warning: bypass\r\n"
-             "Content-Type: application/json\r\n"
-             "Content-Length: %zu\r\n"
-             "Connection: close\r\n\r\n"
-             "%s",
-             NODE_TELEMETRY_PATH, dashboard_host, strlen(payload), payload);
+    // Build a secure curl command block to fire it at Ngrok HTTPS
+    char command[2048];
+    snprintf(command, sizeof(command),
+        "curl -s -X POST https://%s/api/telemetry "
+        "-H \"Content-Type: application/json\" "
+        "-d '%s' > /dev/null 2>&1 &", 
+        NODE_DASHBOARD_HOST, payload);
 
-    struct addrinfo hints, *res;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    
-    char port_str[16];
-    snprintf(port_str, sizeof(port_str), "%d", dashboard_port);
-
-    if (getaddrinfo(dashboard_host, port_str, &hints, &res) != 0) return;
-
-    if ((sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) < 0) {
-        freeaddrinfo(res);
-        return;
-    }
-
-    if (connect(sock, res->ai_addr, res->ai_addrlen) >= 0) {
-        send(sock, request, strlen(request), 0);
-    }
-    
-    close(sock);
-    freeaddrinfo(res);
+    // Execute the curl command asynchronously
+    system(command);
 }
 
 // Layer 2 Hash Scanning
