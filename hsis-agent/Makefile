@@ -12,11 +12,15 @@ OBJ_C=$(SRC_C:.c=.o)
 OBJ_ASM=$(SRC_ASM:.asm=.o)
 
 TARGET=hsis_agent
+ATTACK_TARGET=attack_test
 
-all: $(TARGET)
+all: $(TARGET) $(ATTACK_TARGET)
 
 $(TARGET): $(OBJ_C) $(OBJ_ASM)
 	$(CC) $(OBJ_C) $(OBJ_ASM) -o $(TARGET) $(LDFLAGS)
+
+$(ATTACK_TARGET): attack_test.c
+	$(CC) $(CFLAGS) attack_test.c -o $(ATTACK_TARGET) $(LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -25,7 +29,7 @@ $(TARGET): $(OBJ_C) $(OBJ_ASM)
 	$(ASM) $(ASMFLAGS) $< -o $@
 
 clean:
-	rm -f *.o $(TARGET)
+	rm -f *.o $(TARGET) $(ATTACK_TARGET)
 
 install: $(TARGET)
 	@echo "Installing HSIS Agent to /usr/local/bin/"

@@ -36,10 +36,10 @@ void send_telemetry(const char *agent_id, const char *syscall_type, uint32_t exp
     if (expected != 0) snprintf(ex_hash_str, sizeof(ex_hash_str), "\"%08x\"", expected);
     if (actual != 0) snprintf(ac_hash_str, sizeof(ac_hash_str), "\"%08x\"", actual);
 
-    // Build JSON Payload
+    // Build JSON Payload with proper nested details for the dashboard
     snprintf(payload, sizeof(payload),
-             "{\"agent_id\":\"%s\",\"syscall_type\":\"%s\",\"expected_hash\":%s,\"actual_hash\":%s,\"details\":\"%s\"}",
-             agent_id, syscall_type, ex_hash_str, ac_hash_str, details);
+             "{\"agent_id\":\"%s\",\"syscall_type\":\"%s\",\"expected_hash\":%s,\"actual_hash\":%s,\"details\":\"{\\\"msg\\\":\\\"%s\\\",\\\"process\\\":\\\"hsis_monitored_app\\\",\\\"severity\\\":\\\"Critical\\\",\\\"pid\\\":%d,\\\"cpu\\\":\\\"45.2%%\\\",\\\"mem\\\":\\\"12.1%%\\\"}\"}",
+             agent_id, syscall_type, ex_hash_str, ac_hash_str, details, getpid());
 
     // Build a secure curl command block to fire it at Ngrok HTTPS
     char command[2048];
@@ -148,11 +148,17 @@ int main(int argc, char *argv[]) {
     if (target_pid == 0) {
         // Child payload generating highly suspicious metrics directly
         ptrace(PTRACE_TRACEME, 0, NULL, NULL);
-        while (1) {
-            // Trigger an RWX mprotect 
-            void *ptr = mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-            mprotect(ptr, 4096, PROT_READ|PROT_WRITE|PROT_EXEC);
-            sleep(2);
+        if (argc > 1) {
+            execvp(argv[1], &argv[1]);
+            perror("execvp failed");
+            exit(1);
+        } else {
+            while (1) {
+                // Trigger an RWX mprotect 
+                void *ptr = mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+                mprotect(ptr, 4096, PROT_READ|PROT_WRITE|PROT_EXEC);
+                sleep(2);
+            }
         }
     } else {
         printf("[HSIS Core] Monitoring PID %d...\n", target_pid);
