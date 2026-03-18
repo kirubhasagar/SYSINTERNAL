@@ -9,7 +9,7 @@ export default defineConfig({
     allowedHosts: ['32ca-49-47-219-228.ngrok-free.app'],
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: 'http://127.0.0.1:5000',
         changeOrigin: true
       }
     }

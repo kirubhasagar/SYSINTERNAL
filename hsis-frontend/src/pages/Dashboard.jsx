@@ -154,10 +154,10 @@ const Dashboard = () => {
                 <button className="px-4 py-2 text-sm font-medium text-white bg-indigo-600/10 rounded-lg border border-indigo-500/20 flex items-center gap-2">
                   <LayoutDashboard className="w-4 h-4" /> Dashboard
                 </button>
-                <button className="px-4 py-2 text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 rounded-lg flex items-center gap-2 transition-colors">
+                <button onClick={() => navigate('/incidents')} className="px-4 py-2 text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 rounded-lg flex items-center gap-2 transition-colors">
                   <AlertTriangle className="w-4 h-4" /> Incidents
                 </button>
-                <button className="px-4 py-2 text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 rounded-lg flex items-center gap-2 transition-colors">
+                <button onClick={() => navigate('/reports')} className="px-4 py-2 text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 rounded-lg flex items-center gap-2 transition-colors">
                   <FileText className="w-4 h-4" /> Reports
                 </button>
               </div>
