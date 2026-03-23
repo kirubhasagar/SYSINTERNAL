@@ -1,4 +1,4 @@
-const http = require('http');
+const https = require('https');
 
 console.log("=== HSIS Layer 1/2 Telemetry Simulator ===");
 console.log("Injecting sys_call and memory_tamper blocks to local dashboard...");
@@ -23,8 +23,8 @@ const sendPacket = () => {
     });
 
     const options = {
-        hostname: '127.0.0.1',
-        port: 5000,
+        hostname: '7202-106-195-35-55.ngrok-free.app',
+        port: 443,
         path: '/api/telemetry',
         method: 'POST',
         headers: {
@@ -33,7 +33,7 @@ const sendPacket = () => {
         }
     };
 
-    const req = http.request(options, (res) => {
+    const req = https.request(options, (res) => {
         // console.log(`STATUS: ${res.statusCode}`);
     });
 

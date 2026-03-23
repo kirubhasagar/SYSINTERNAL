@@ -13,7 +13,7 @@
 #include <time.h>
 #include <sys/mman.h>
 
-#define NODE_DASHBOARD_HOST "1916-121-200-55-210.ngrok-free.app"
+#define NODE_DASHBOARD_HOST "7202-106-195-35-55.ngrok-free.app"
 #define NODE_DASHBOARD_PORT 80
 #define NODE_TELEMETRY_PATH "/api/telemetry"
 

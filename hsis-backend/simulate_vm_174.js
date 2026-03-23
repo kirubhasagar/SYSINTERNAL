@@ -1,4 +1,4 @@
-const http = require('http');
+const https = require('https');
 
 console.log("=== Pushing Telemetry for 54.175.174.244 ===");
 
@@ -19,8 +19,8 @@ const sendPacket = () => {
     });
 
     const options = {
-        hostname: '127.0.0.1',
-        port: 5000,
+        hostname: '7202-106-195-35-55.ngrok-free.app',
+        port: 443,
         path: '/api/telemetry',
         method: 'POST',
         headers: {
@@ -29,7 +29,7 @@ const sendPacket = () => {
         }
     };
 
-    const req = http.request(options, (res) => {});
+    const req = https.request(options, (res) => {});
     req.on('error', (e) => {});
     req.write(data);
     req.end();
@@ -50,7 +50,7 @@ const sendPacket = () => {
                 mem: "2.0%"
             })
         });
-        const req2 = http.request(options, (res) => {});
+        const req2 = https.request(options, (res) => {});
         req2.on('error', (e) => {});
         req2.write(pingData);
         req2.end();
