@@ -24,88 +24,124 @@ const Dashboard = () => {
   useEffect(() => {
     const fetchTelemetry = async () => {
       try {
-        const res = await fetch('/api/telemetry');
-        const data = await res.json();
-        
-        if (data && data.length > 0) {
-          const uniqueAgentsMap = {};
-          data.forEach(log => {
-            if (!uniqueAgentsMap[log.agent_id]) {
-              const ip = log.agent_id.replace('aws-ec2-', '');
-              uniqueAgentsMap[log.agent_id] = { id: log.agent_id, status: 'secure', ip: ip, lastPing: new Date(log.timestamp).toLocaleTimeString(), alerts: 0 };
-            }
-          });
-          const agentList = Object.values(uniqueAgentsMap);
-          setAgents(agentList);
+        const [telemetryRes, metricsRes] = await Promise.all([
+          fetch('/api/telemetry'),
+          fetch('/api/metrics')
+        ]);
+        const [telemetryLogs, metrics] = await Promise.all([
+          telemetryRes.json(),
+          metricsRes.json()
+        ]);
 
-          // Filter data for the selected agent
-          const activeData = selectedAgent === 'ALL' ? data : data.filter(log => log.agent_id === selectedAgent);
+        const metricsMap = {};
+        metrics.forEach((metric) => {
+          metricsMap[metric.agent_id] = metric;
+        });
 
-          const formattedLogs = activeData.map((log, index) => {
-            let parsedDetails = { msg: log.details, process: 'Unknown', severity: 'Info', pid: '-', cpu: '-', mem: '-' };
-            try { parsedDetails = JSON.parse(log.details); } catch(e) {}
-            return {
-              id: log._id || index,
-              time: new Date(log.timestamp).toLocaleTimeString(),
-              agent: log.agent_id,
-              type: log.syscall_type,
-              ...parsedDetails
+        const uniqueAgentsMap = {};
+        telemetryLogs.forEach((log) => {
+          if (!uniqueAgentsMap[log.agent_id]) {
+            const metric = metricsMap[log.agent_id] || {};
+            uniqueAgentsMap[log.agent_id] = {
+              id: log.agent_id,
+              status: metric.status || 'secure',
+              ip: metric.public_ip || metric.private_ip || log.agent_id.replace('aws-ec2-', ''),
+              hostname: metric.hostname || 'unknown-host',
+              lastPing: new Date((metric.timestamp || log.timestamp)).toLocaleTimeString(),
+              alerts: 0,
+              cpu: metric.cpu_percent ?? 0,
+              memory: metric.memory_percent ?? 0,
+              uptimeSeconds: metric.uptime_seconds ?? 0
             };
-          });
-          setLogs(formattedLogs);
-
-          let compromised = 0;
-          activeData.forEach(log => {
-            if (log.syscall_type !== 'SYSTEM_STARTUP' && log.syscall_type !== 'chmod') {
-              uniqueAgentsMap[log.agent_id].alerts += 1;
-            }
-            if (log.syscall_type === 'MEMORY_TAMPER' || log.syscall_type === 'ROOTKIT_DETECTED') {
-               uniqueAgentsMap[log.agent_id].status = 'compromised';
-            } else if ((log.syscall_type === 'ptrace' || log.syscall_type === 'mprotect') && uniqueAgentsMap[log.agent_id].status !== 'compromised') {
-               uniqueAgentsMap[log.agent_id].status = 'warning';
-            }
-          });
-          
-          Object.values(uniqueAgentsMap).forEach(a => { if(a.status === 'compromised') compromised++; });
-
-          let state = 'SECURE';
-          let score = 100;
-          let threat = 'Low';
-          
-          if (agentList.some(a => a.status === 'compromised')) {
-              state = 'CRITICAL'; score = Math.floor(Math.random() * 20) + 40; threat = 'Critical';
           }
-          else if (agentList.some(a => a.status === 'warning')) {
-              state = 'WARNING'; score = Math.floor(Math.random() * 20) + 70; threat = 'Medium';
+        });
+
+        metrics.forEach((metric) => {
+          if (!uniqueAgentsMap[metric.agent_id]) {
+            uniqueAgentsMap[metric.agent_id] = {
+              id: metric.agent_id,
+              status: metric.status || 'secure',
+              ip: metric.public_ip || metric.private_ip || metric.agent_id.replace('aws-ec2-', ''),
+              hostname: metric.hostname || 'unknown-host',
+              lastPing: new Date(metric.timestamp).toLocaleTimeString(),
+              alerts: 0,
+              cpu: metric.cpu_percent ?? 0,
+              memory: metric.memory_percent ?? 0,
+              uptimeSeconds: metric.uptime_seconds ?? 0
+            };
+          }
+        });
+
+        const activeLogs = selectedAgent === 'ALL'
+          ? telemetryLogs
+          : telemetryLogs.filter((log) => log.agent_id === selectedAgent);
+
+        const formattedLogs = activeLogs.map((log, index) => {
+          let parsedDetails = { msg: log.details, process: 'Unknown', severity: 'Info', pid: '-', cpu: '-', mem: '-', host: '' };
+          try { parsedDetails = typeof log.details === 'string' ? JSON.parse(log.details) : (log.details || parsedDetails); } catch (e) {}
+          return {
+            id: log._id || index,
+            time: new Date(log.timestamp).toLocaleTimeString(),
+            agent: log.agent_id,
+            type: log.syscall_type,
+            ...parsedDetails
+          };
+        });
+        setLogs(formattedLogs);
+
+        telemetryLogs.forEach((log) => {
+          const entry = uniqueAgentsMap[log.agent_id];
+          if (!entry) return;
+
+          if (log.syscall_type !== 'SYSTEM_STARTUP' && log.syscall_type !== 'chmod') {
+            entry.alerts += 1;
           }
 
-          setStats({
-            activeAgents: agentList.length,
-            healthyCount: agentList.length - compromised,
-            compromisedCount: compromised,
-            systemState: state,
-            securityScore: score,
-            threatLevel: threat,
-            riskPercentage: `${100 - score}%`,
-            uptime: '99.98%'
-          });
-          
-          const tData = [];
-          let currentBin = { time: formattedLogs[0]?.time || new Date().toLocaleTimeString(), events: 0 };
-          const chronoLogs = [...formattedLogs].reverse();
-           
-          chronoLogs.forEach((l, i) => {
-             currentBin.events += 1;
-             if (currentBin.events >= Math.max(1, Math.floor(chronoLogs.length / 15))) {
-               tData.push({...currentBin});
-               if (i < chronoLogs.length - 1) currentBin = { time: chronoLogs[i+1].time, events: 0 };
-             }
-          });
-          if (currentBin.events > 0 && tData.indexOf(currentBin) === -1) tData.push({...currentBin});
-          
-          if (tData.length === 0) tData.push({ time: new Date().toLocaleTimeString(), events: 0 });
-          setTelemetryData(tData.slice(-15));
-        }
+          if (log.syscall_type === 'MEMORY_TAMPER' || log.syscall_type === 'ROOTKIT_DETECTED') {
+            entry.status = 'compromised';
+          } else if ((log.syscall_type === 'SYSCALL_ANOMALY' || log.syscall_type === 'EXECVE_HOOK') && entry.status !== 'compromised') {
+            entry.status = 'warning';
+          }
+        });
+
+        const agentList = Object.values(uniqueAgentsMap);
+        setAgents(agentList);
+
+        const compromisedCount = agentList.filter((agent) => agent.status === 'compromised').length;
+        const warningCount = agentList.filter((agent) => agent.status === 'warning').length;
+        const score = agentList.length === 0
+          ? 100
+          : Math.max(15, Math.round(100 - ((compromisedCount * 35) + (warningCount * 15))));
+        const systemState = compromisedCount > 0 ? 'CRITICAL' : warningCount > 0 ? 'WARNING' : 'SECURE';
+        const threatLevel = compromisedCount > 0 ? 'Critical' : warningCount > 0 ? 'Medium' : 'Low';
+        const avgUptimeSeconds = agentList.length
+          ? Math.round(agentList.reduce((sum, agent) => sum + (agent.uptimeSeconds || 0), 0) / agentList.length)
+          : 0;
+        const uptimeHours = (avgUptimeSeconds / 3600).toFixed(1);
+
+        setStats({
+          activeAgents: agentList.length,
+          healthyCount: agentList.filter((agent) => agent.status === 'secure').length,
+          compromisedCount,
+          systemState,
+          securityScore: score,
+          threatLevel,
+          riskPercentage: `${100 - score}%`,
+          uptime: `${uptimeHours}h avg`
+        });
+
+        const eventBuckets = [];
+        const chronoLogs = [...activeLogs].reverse();
+        chronoLogs.forEach((log) => {
+          const label = new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          const lastBucket = eventBuckets[eventBuckets.length - 1];
+          if (lastBucket && lastBucket.time === label) {
+            lastBucket.events += 1;
+          } else {
+            eventBuckets.push({ time: label, events: 1 });
+          }
+        });
+        setTelemetryData(eventBuckets.length ? eventBuckets.slice(-15) : [{ time: new Date().toLocaleTimeString(), events: 0 }]);
       } catch (err) {
         console.error("Failed to fetch telemetry", err);
       }
@@ -180,7 +216,7 @@ const Dashboard = () => {
 
               <div className="flex flex-col items-end hidden sm:flex">
                 <span className="text-xs text-slate-400 font-medium">System Time</span>
-                <span className="text-sm text-indigo-300 font-mono">{currentTime} UTC</span>
+                <span className="text-sm text-indigo-300 font-mono">{currentTime}</span>
               </div>
               <div className="h-8 w-px bg-indigo-900/40"></div>
               <button onClick={handleLogout} className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-white transition-colors bg-white/5 px-4 py-2 rounded-lg border border-white/5 hover:border-white/10">
@@ -316,7 +352,7 @@ const Dashboard = () => {
                     <tr key={i} className="hover:bg-white/[0.02] transition-colors group">
                       <td className="px-4 py-3 rounded-l-lg">
                         <div className="font-medium text-slate-200 group-hover:text-indigo-300 transition-colors break-all line-clamp-1" title={log.process}>{log.process}</div>
-                        <div className="text-xs text-slate-500 font-mono mt-0.5">PID: {log.pid}</div>
+                        <div className="text-xs text-slate-500 font-mono mt-0.5">PID: {log.pid} {log.host ? `• ${log.host}` : ''}</div>
                       </td>
                       <td className="px-4 py-3 text-xs font-mono">
                         <div>{log.cpu}</div>

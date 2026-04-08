@@ -8,6 +8,12 @@ router.post('/', async (req, res) => {
   try {
     const { agent_id, syscall_type, expected_hash, actual_hash, details } = req.body;
 
+    if (!agent_id || !syscall_type) {
+      return res.status(400).json({ msg: 'agent_id and syscall_type are required' });
+    }
+
+    const serializedDetails = typeof details === 'string' ? details : JSON.stringify(details || {});
+
     // In a real high-throughput scenario, we might push this to a Redis queue first.
     // For this implementation, we write directly to MongoDB.
 
@@ -20,7 +26,7 @@ router.post('/', async (req, res) => {
         syscall_type,
         expected_hash,
         actual_hash,
-        details
+        details: serializedDetails
       });
       await newLog.save();
     } catch (dbError) {

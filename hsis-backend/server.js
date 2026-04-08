@@ -14,6 +14,7 @@ app.use(express.json());
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/telemetry', require('./routes/telemetry'));
+app.use('/api/metrics', require('./routes/metrics'));
 
 // Connect to MongoDB
 const PORT = process.env.PORT || 5000;

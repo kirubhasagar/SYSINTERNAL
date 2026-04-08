@@ -14,8 +14,8 @@ const Incidents = () => {
         
         if (data && data.length > 0) {
           const formattedLogs = data.map((log, index) => {
-            let parsedDetails = { msg: log.details, process: 'Unknown', severity: 'Info', pid: '-', cpu: '-', mem: '-' };
-            try { parsedDetails = JSON.parse(log.details); } catch(e) {}
+            let parsedDetails = { msg: log.details, process: 'Unknown', severity: 'Info', pid: '-', cpu: '-', mem: '-', host: '' };
+            try { parsedDetails = typeof log.details === 'string' ? JSON.parse(log.details) : (log.details || parsedDetails); } catch(e) {}
             return {
               id: log._id || index,
               time: new Date(log.timestamp).toLocaleString(),
