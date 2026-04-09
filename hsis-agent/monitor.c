@@ -4,6 +4,9 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <errno.h>
+#include <dirent.h>
+#include <limits.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <sys/user.h>
@@ -14,6 +17,8 @@
 #include <time.h>
 #include <sys/mman.h>
 #include <sys/sysinfo.h>
+#include <sys/stat.h>
+#include <signal.h>
 
 #define DEFAULT_BACKEND_URL "http://127.0.0.1:5000"
 #define TELEMETRY_PATH "/api/telemetry"
@@ -26,6 +31,9 @@
 #define SYS_CHMOD 90
 
 extern uint32_t crc32_hash_buffer(const uint8_t *buffer, size_t length);
+
+static void send_metrics_snapshot(void);
+static void send_telemetry(const char *syscall_type, uint32_t expected, uint32_t actual, const char *details, const char *severity);
 
 typedef struct {
     unsigned long long execve;
@@ -43,10 +51,15 @@ static char hostname_buffer[128] = "unknown-host";
 static char private_ip_buffer[64] = "";
 static char public_ip_buffer[64] = "";
 static char monitored_process_name[256] = "hsis_monitored_app";
+static char baseline_exe_path[PATH_MAX] = "";
 static int monitored_pid = -1;
+static uint32_t baseline_exe_hash = 0;
 static syscall_counters_t syscall_counters = {0};
 static unsigned long long prev_total_jiffies = 0;
 static unsigned long long prev_idle_jiffies = 0;
+static time_t last_metrics_at = 0;
+static time_t last_integrity_check_at = 0;
+static time_t last_rootkit_check_at = 0;
 
 static void trim_whitespace(char *value) {
     size_t start = 0;
@@ -270,6 +283,146 @@ static void detect_process_name(pid_t pid, char *buffer, size_t buffer_size) {
     trim_whitespace(buffer);
 }
 
+static int read_symlink_to_buffer(const char *path, char *buffer, size_t buffer_size) {
+    ssize_t len = readlink(path, buffer, buffer_size - 1);
+    if (len < 0) {
+        buffer[0] = '\0';
+        return -1;
+    }
+
+    buffer[len] = '\0';
+    return 0;
+}
+
+static int read_remote_string(pid_t pid, unsigned long address, char *buffer, size_t buffer_size) {
+    size_t copied = 0;
+
+    if (buffer_size == 0) {
+        return -1;
+    }
+
+    while (copied + sizeof(long) <= buffer_size) {
+        errno = 0;
+        long data = ptrace(PTRACE_PEEKDATA, pid, (void *)(address + copied), NULL);
+        if (data == -1 && errno != 0) {
+            break;
+        }
+
+        memcpy(buffer + copied, &data, sizeof(long));
+        if (memchr(&data, '\0', sizeof(long)) != NULL) {
+            buffer[buffer_size - 1] = '\0';
+            return 0;
+        }
+
+        copied += sizeof(long);
+    }
+
+    buffer[buffer_size - 1] = '\0';
+    return 0;
+}
+
+static uint32_t hash_file_crc32(const char *path) {
+    FILE *file = fopen(path, "rb");
+    uint8_t buffer[4096];
+    size_t bytes_read;
+    uint32_t rolling = 0;
+
+    if (!file) {
+        return 0;
+    }
+
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        uint32_t chunk_hash = crc32_hash_buffer(buffer, bytes_read);
+        rolling = crc32_hash_buffer((const uint8_t *)&chunk_hash, sizeof(chunk_hash)) ^ rolling;
+    }
+
+    fclose(file);
+    return rolling;
+}
+
+static int path_has_prefix(const char *path, const char *prefix) {
+    return strncmp(path, prefix, strlen(prefix)) == 0;
+}
+
+static int path_is_user_writable_location(const char *path) {
+    return path_has_prefix(path, "/tmp/") ||
+           path_has_prefix(path, "/var/tmp/") ||
+           path_has_prefix(path, "/dev/shm/") ||
+           path_has_prefix(path, "/run/user/");
+}
+
+static int path_is_suspicious_exec(const char *path) {
+    return path_is_user_writable_location(path) ||
+           strstr(path, "deleted") != NULL ||
+           strstr(path, ".so") != NULL;
+}
+
+static void maybe_send_periodic_metrics(void) {
+    time_t now = time(NULL);
+    if (now - last_metrics_at >= 5) {
+        send_metrics_snapshot();
+        last_metrics_at = now;
+    }
+}
+
+static void initialize_integrity_baseline(pid_t pid) {
+    char exe_link[64];
+
+    snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", pid);
+    if (read_symlink_to_buffer(exe_link, baseline_exe_path, sizeof(baseline_exe_path)) == 0) {
+        baseline_exe_hash = hash_file_crc32(baseline_exe_path);
+    }
+}
+
+static void check_binary_integrity(pid_t pid) {
+    char exe_link[64];
+    char current_exe_path[PATH_MAX];
+    uint32_t current_hash;
+
+    if (baseline_exe_path[0] == '\0') {
+        return;
+    }
+
+    snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", pid);
+    if (read_symlink_to_buffer(exe_link, current_exe_path, sizeof(current_exe_path)) != 0) {
+        return;
+    }
+
+    if (strcmp(current_exe_path, baseline_exe_path) != 0) {
+        syscall_counters.memory_tamper++;
+        send_telemetry("MEMORY_TAMPER", baseline_exe_hash, 0, "Executable path changed after baseline capture", "Critical");
+        return;
+    }
+
+    current_hash = hash_file_crc32(current_exe_path);
+    if (current_hash != 0 && baseline_exe_hash != 0 && current_hash != baseline_exe_hash) {
+        syscall_counters.memory_tamper++;
+        send_telemetry("MEMORY_TAMPER", baseline_exe_hash, current_hash, "Executable hash mismatch detected", "Critical");
+    }
+}
+
+static void check_environment_integrity(pid_t pid) {
+    char environ_path[64];
+    char env_buffer[4096];
+    FILE *file;
+    size_t bytes_read;
+
+    snprintf(environ_path, sizeof(environ_path), "/proc/%d/environ", pid);
+    file = fopen(environ_path, "rb");
+    if (!file) {
+        return;
+    }
+
+    bytes_read = fread(env_buffer, 1, sizeof(env_buffer) - 1, file);
+    fclose(file);
+    env_buffer[bytes_read] = '\0';
+
+    if (strstr(env_buffer, "LD_PRELOAD=") != NULL || strstr(env_buffer, "LD_AUDIT=") != NULL) {
+        syscall_counters.memory_tamper++;
+        send_telemetry("MEMORY_TAMPER", 0, 0, "Dynamic linker injection variable detected in target environment", "High");
+    }
+}
+
 static const char *status_from_counters(void) {
     if (syscall_counters.memory_tamper > 0 || syscall_counters.rootkit > 0) {
         return "compromised";
@@ -413,9 +566,77 @@ static void check_memory_integrity(pid_t pid) {
     fclose(maps);
 }
 
+static void run_layer2_checks(pid_t pid) {
+    time_t now = time(NULL);
+    if (now - last_integrity_check_at < 10) {
+        return;
+    }
+
+    check_binary_integrity(pid);
+    check_environment_integrity(pid);
+    check_memory_integrity(pid);
+    last_integrity_check_at = now;
+}
+
+static void check_rootkit_indicators(void) {
+    FILE *modules = fopen("/proc/modules", "r");
+    char line[512];
+
+    if (!modules) {
+        return;
+    }
+
+    while (fgets(line, sizeof(line), modules)) {
+        if (strstr(line, "diamorphine") != NULL ||
+            strstr(line, "reptile") != NULL ||
+            strstr(line, "adore") != NULL ||
+            strstr(line, "rootkit") != NULL) {
+            syscall_counters.rootkit++;
+            send_telemetry("ROOTKIT_DETECTED", 0, 0, "Suspicious kernel module name detected in /proc/modules", "Critical");
+            fclose(modules);
+            return;
+        }
+    }
+
+    fclose(modules);
+}
+
+static void check_process_visibility(pid_t pid) {
+    char proc_dir[64];
+    struct stat st;
+    char exe_link[64];
+    char exe_target[PATH_MAX];
+
+    snprintf(proc_dir, sizeof(proc_dir), "/proc/%d", pid);
+    if (stat(proc_dir, &st) != 0 && kill(pid, 0) == 0) {
+        syscall_counters.rootkit++;
+        send_telemetry("ROOTKIT_DETECTED", 0, 0, "Process visibility mismatch between kill() and /proc", "Critical");
+        return;
+    }
+
+    snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", pid);
+    if (read_symlink_to_buffer(exe_link, exe_target, sizeof(exe_target)) == 0 && strstr(exe_target, "deleted") != NULL) {
+        syscall_counters.rootkit++;
+        send_telemetry("ROOTKIT_DETECTED", 0, 0, "Running process is mapped from a deleted executable", "High");
+    }
+}
+
+static void run_layer3_checks(pid_t pid) {
+    time_t now = time(NULL);
+    if (now - last_rootkit_check_at < 20) {
+        return;
+    }
+
+    check_rootkit_indicators();
+    check_process_visibility(pid);
+    last_rootkit_check_at = now;
+}
+
 static void monitor_syscalls(pid_t pid) {
     struct user_regs_struct regs;
     int status;
+    char exec_path[PATH_MAX];
+    unsigned long chmod_mode;
 
     monitored_pid = (int)pid;
     detect_process_name(pid, monitored_process_name, sizeof(monitored_process_name));
@@ -432,23 +653,35 @@ static void monitor_syscalls(pid_t pid) {
 
         if (regs.orig_rax == SYS_EXECVE) {
             syscall_counters.execve++;
-            send_telemetry("EXECVE_HOOK", 0, 0, "Suspicious execution hook detected via ptrace", "High");
-            send_metrics_snapshot();
+            exec_path[0] = '\0';
+            read_remote_string(pid, (unsigned long)regs.rdi, exec_path, sizeof(exec_path));
+            if (exec_path[0] != '\0' && path_is_suspicious_exec(exec_path)) {
+                send_telemetry("EXECVE_HOOK", 0, 0, "Execution from writable or unusual location detected", "High");
+            }
         } else if (regs.orig_rax == SYS_MPROTECT) {
             syscall_counters.mprotect++;
             if ((regs.rdx & 7) == 7) {
                 syscall_counters.anomaly++;
                 send_telemetry("SYSCALL_ANOMALY", 0, 0, "mprotect RWX call detected", "Critical");
-                send_metrics_snapshot();
             }
         } else if (regs.orig_rax == SYS_PTRACE) {
             syscall_counters.ptrace++;
             syscall_counters.anomaly++;
             send_telemetry("SYSCALL_ANOMALY", 0, 0, "Unexpected ptrace request detected on child", "High");
-            send_metrics_snapshot();
         } else if (regs.orig_rax == SYS_CHMOD) {
             syscall_counters.chmod++;
+            chmod_mode = (unsigned long)regs.rsi;
+            exec_path[0] = '\0';
+            read_remote_string(pid, (unsigned long)regs.rdi, exec_path, sizeof(exec_path));
+            if ((chmod_mode & 06000) != 0 && exec_path[0] != '\0' && path_is_user_writable_location(exec_path)) {
+                syscall_counters.anomaly++;
+                send_telemetry("SYSCALL_ANOMALY", 0, 0, "chmod setuid/setgid bit applied in writable location", "High");
+            }
         }
+
+        run_layer2_checks(pid);
+        run_layer3_checks(pid);
+        maybe_send_periodic_metrics();
 
         ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
         waitpid(pid, &status, 0);
@@ -458,8 +691,13 @@ static void monitor_syscalls(pid_t pid) {
 
 static void run_idle_monitor(void) {
     printf("[HSIS Core] No target process supplied. Running passive heartbeat mode.\n");
+    monitored_pid = getpid();
+    detect_process_name(monitored_pid, monitored_process_name, sizeof(monitored_process_name));
+    initialize_integrity_baseline(monitored_pid);
     while (1) {
-        send_metrics_snapshot();
+        run_layer2_checks(monitored_pid);
+        run_layer3_checks(monitored_pid);
+        maybe_send_periodic_metrics();
         sleep(5);
     }
 }
@@ -477,6 +715,7 @@ static void run_demo_monitor(void) {
         printf("[HSIS Core] Demo mode monitoring PID %d with backend %s...\n", target_pid, backend_url);
         monitored_pid = (int)target_pid;
         detect_process_name(target_pid, monitored_process_name, sizeof(monitored_process_name));
+        initialize_integrity_baseline(target_pid);
         check_memory_integrity(target_pid);
         monitor_syscalls(target_pid);
         send_metrics_snapshot();
@@ -520,7 +759,9 @@ int main(int argc, char *argv[]) {
         printf("[HSIS Core] Monitoring PID %d with backend %s...\n", target_pid, backend_url);
         monitored_pid = (int)target_pid;
         detect_process_name(target_pid, monitored_process_name, sizeof(monitored_process_name));
-        check_memory_integrity(target_pid);
+        initialize_integrity_baseline(target_pid);
+        run_layer2_checks(target_pid);
+        run_layer3_checks(target_pid);
         monitor_syscalls(target_pid);
         send_metrics_snapshot();
         printf("[HSIS Core] Target process exited. Agent stopping.\n");
