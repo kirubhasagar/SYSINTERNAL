@@ -45,6 +45,13 @@ typedef struct {
     unsigned long long rootkit;
 } syscall_counters_t;
 
+typedef struct {
+    pid_t pid;
+    int suspicious_exec_reported;
+    int deleted_exec_reported;
+    int ld_preload_reported;
+} pid_report_t;
+
 static char global_agent_id[256] = "agent-unknown";
 static char backend_url[512] = DEFAULT_BACKEND_URL;
 static char hostname_buffer[128] = "unknown-host";
@@ -55,6 +62,8 @@ static char baseline_exe_path[PATH_MAX] = "";
 static int monitored_pid = -1;
 static uint32_t baseline_exe_hash = 0;
 static syscall_counters_t syscall_counters = {0};
+static pid_report_t pid_reports[8192];
+static size_t pid_report_count = 0;
 static unsigned long long prev_total_jiffies = 0;
 static unsigned long long prev_idle_jiffies = 0;
 static time_t last_metrics_at = 0;
@@ -357,6 +366,42 @@ static int path_is_suspicious_exec(const char *path) {
            strstr(path, ".so") != NULL;
 }
 
+static pid_report_t *get_or_create_pid_report(pid_t pid) {
+    for (size_t i = 0; i < pid_report_count; i++) {
+        if (pid_reports[i].pid == pid) {
+            return &pid_reports[i];
+        }
+    }
+
+    if (pid_report_count >= (sizeof(pid_reports) / sizeof(pid_reports[0]))) {
+        return NULL;
+    }
+
+    pid_reports[pid_report_count].pid = pid;
+    pid_reports[pid_report_count].suspicious_exec_reported = 0;
+    pid_reports[pid_report_count].deleted_exec_reported = 0;
+    pid_reports[pid_report_count].ld_preload_reported = 0;
+    pid_report_count++;
+    return &pid_reports[pid_report_count - 1];
+}
+
+static void remove_stale_pid_reports(void) {
+    size_t write_index = 0;
+
+    for (size_t i = 0; i < pid_report_count; i++) {
+        char proc_dir[64];
+        snprintf(proc_dir, sizeof(proc_dir), "/proc/%d", pid_reports[i].pid);
+        if (access(proc_dir, F_OK) == 0) {
+            if (write_index != i) {
+                pid_reports[write_index] = pid_reports[i];
+            }
+            write_index++;
+        }
+    }
+
+    pid_report_count = write_index;
+}
+
 static void maybe_send_periodic_metrics(void) {
     time_t now = time(NULL);
     if (now - last_metrics_at >= 5) {
@@ -421,6 +466,25 @@ static void check_environment_integrity(pid_t pid) {
         syscall_counters.memory_tamper++;
         send_telemetry("MEMORY_TAMPER", 0, 0, "Dynamic linker injection variable detected in target environment", "High");
     }
+}
+
+static int process_has_injection_env(pid_t pid) {
+    char environ_path[64];
+    char env_buffer[4096];
+    FILE *file;
+    size_t bytes_read;
+
+    snprintf(environ_path, sizeof(environ_path), "/proc/%d/environ", pid);
+    file = fopen(environ_path, "rb");
+    if (!file) {
+        return 0;
+    }
+
+    bytes_read = fread(env_buffer, 1, sizeof(env_buffer) - 1, file);
+    fclose(file);
+    env_buffer[bytes_read] = '\0';
+
+    return strstr(env_buffer, "LD_PRELOAD=") != NULL || strstr(env_buffer, "LD_AUDIT=") != NULL;
 }
 
 static const char *status_from_counters(void) {
@@ -632,6 +696,69 @@ static void run_layer3_checks(pid_t pid) {
     last_rootkit_check_at = now;
 }
 
+static void scan_process_table_for_suspicious_activity(void) {
+    DIR *proc_dir = opendir("/proc");
+    struct dirent *entry;
+
+    if (!proc_dir) {
+        return;
+    }
+
+    while ((entry = readdir(proc_dir)) != NULL) {
+        pid_t pid;
+        char exe_link[64];
+        char exe_target[PATH_MAX];
+        pid_report_t *report;
+
+        if (!isdigit((unsigned char)entry->d_name[0])) {
+            continue;
+        }
+
+        pid = (pid_t)atoi(entry->d_name);
+        if (pid <= 1 || pid == getpid()) {
+            continue;
+        }
+
+        report = get_or_create_pid_report(pid);
+        if (!report) {
+            continue;
+        }
+
+        snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", pid);
+        if (read_symlink_to_buffer(exe_link, exe_target, sizeof(exe_target)) != 0) {
+            continue;
+        }
+
+        if (!report->suspicious_exec_reported && path_is_user_writable_location(exe_target)) {
+            syscall_counters.execve++;
+            syscall_counters.anomaly++;
+            monitored_pid = (int)pid;
+            detect_process_name(pid, monitored_process_name, sizeof(monitored_process_name));
+            send_telemetry("EXECVE_HOOK", 0, 0, "Process executing from writable location detected", "High");
+            report->suspicious_exec_reported = 1;
+        }
+
+        if (!report->deleted_exec_reported && strstr(exe_target, "deleted") != NULL) {
+            syscall_counters.rootkit++;
+            monitored_pid = (int)pid;
+            detect_process_name(pid, monitored_process_name, sizeof(monitored_process_name));
+            send_telemetry("ROOTKIT_DETECTED", 0, 0, "Running process mapped from deleted executable", "Critical");
+            report->deleted_exec_reported = 1;
+        }
+
+        if (!report->ld_preload_reported && process_has_injection_env(pid)) {
+            syscall_counters.memory_tamper++;
+            monitored_pid = (int)pid;
+            detect_process_name(pid, monitored_process_name, sizeof(monitored_process_name));
+            send_telemetry("MEMORY_TAMPER", 0, 0, "Dynamic linker injection variable detected in running process", "High");
+            report->ld_preload_reported = 1;
+        }
+    }
+
+    closedir(proc_dir);
+    remove_stale_pid_reports();
+}
+
 static void monitor_syscalls(pid_t pid) {
     struct user_regs_struct regs;
     int status;
@@ -697,8 +824,9 @@ static void run_idle_monitor(void) {
     while (1) {
         run_layer2_checks(monitored_pid);
         run_layer3_checks(monitored_pid);
+        scan_process_table_for_suspicious_activity();
         maybe_send_periodic_metrics();
-        sleep(5);
+        sleep(2);
     }
 }
 
