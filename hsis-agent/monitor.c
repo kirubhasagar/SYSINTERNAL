@@ -456,6 +456,34 @@ static void monitor_syscalls(pid_t pid) {
     }
 }
 
+static void run_idle_monitor(void) {
+    printf("[HSIS Core] No target process supplied. Running passive heartbeat mode.\n");
+    while (1) {
+        send_metrics_snapshot();
+        sleep(5);
+    }
+}
+
+static void run_demo_monitor(void) {
+    pid_t target_pid = fork();
+    if (target_pid == 0) {
+        ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+        while (1) {
+            void *ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            mprotect(ptr, 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
+            sleep(2);
+        }
+    } else {
+        printf("[HSIS Core] Demo mode monitoring PID %d with backend %s...\n", target_pid, backend_url);
+        monitored_pid = (int)target_pid;
+        detect_process_name(target_pid, monitored_process_name, sizeof(monitored_process_name));
+        check_memory_integrity(target_pid);
+        monitor_syscalls(target_pid);
+        send_metrics_snapshot();
+        printf("[HSIS Core] Demo target exited. Agent stopping.\n");
+    }
+}
+
 int main(int argc, char *argv[]) {
     printf("[HSIS Core] Initializing Hardened Integrity Suite Layer 1/2...\n");
 
@@ -472,20 +500,22 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    if (argc == 1) {
+        run_idle_monitor();
+        return 0;
+    }
+
+    if (strcmp(argv[1], "--demo") == 0) {
+        run_demo_monitor();
+        return 0;
+    }
+
     pid_t target_pid = fork();
     if (target_pid == 0) {
         ptrace(PTRACE_TRACEME, 0, NULL, NULL);
-        if (argc > 1) {
-            execvp(argv[1], &argv[1]);
-            perror("execvp failed");
-            exit(1);
-        } else {
-            while (1) {
-                void *ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-                mprotect(ptr, 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
-                sleep(2);
-            }
-        }
+        execvp(argv[1], &argv[1]);
+        perror("execvp failed");
+        exit(1);
     } else {
         printf("[HSIS Core] Monitoring PID %d with backend %s...\n", target_pid, backend_url);
         monitored_pid = (int)target_pid;
