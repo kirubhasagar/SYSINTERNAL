@@ -11,6 +11,26 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.get('/', (req, res) => {
+  res.status(200).json({
+    service: 'hsis-backend',
+    status: 'ok',
+    message: 'HSIS backend is running. Use /api/telemetry and /api/metrics for agent traffic.',
+    endpoints: {
+      telemetry: '/api/telemetry',
+      metrics: '/api/metrics',
+      auth: '/api/auth/login'
+    }
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/telemetry', require('./routes/telemetry'));
